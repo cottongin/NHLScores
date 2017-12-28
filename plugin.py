@@ -25,7 +25,7 @@ import supybot.ircutils as ircutils
 import supybot.callbacks as callbacks
 try:
     from supybot.i18n import PluginInternationalization
-    _ = PluginInternationalization('NHL')
+    _ = PluginInternationalization('NHLScores')
 except ImportError:
     # Placeholder that allows to run the plugin on a bot
     # without the i18n module
@@ -37,10 +37,10 @@ import json
 import pytz
 import urllib.request
 
-class NHL(callbacks.Plugin):
+class NHLScores(callbacks.Plugin):
     """Get scores from NHL.com."""
     def __init__(self, irc):
-        self.__parent = super(NHL, self)
+        self.__parent = super(NHLScores, self)
         self.__parent.__init__(irc)
 
         self._SCOREBOARD_ENDPOINT = ("https://statsapi.web.nhl.com/api/v1/schedule?startDate={}&endDate={}" +
@@ -77,6 +77,8 @@ class NHL(callbacks.Plugin):
                 irc.reply('ERROR: {0!s}'.format(e))
                 return
         else:
+            if optional_team.upper() == 'GNJD':
+                optional_team = 'njd'
             date = self._checkDateInput(optional_team)
             if date:
                 team = "all"
@@ -91,19 +93,41 @@ class NHL(callbacks.Plugin):
         if date is None:
             games = self._getTodayGames(team)
             games_string = self._resultAsString(games)
-            #print(games[0]['clock'], games[0]['ended'])
-            if len(games) == 1:
-                if not games[0]['ended']:
-                    broadcasts = games[0]['broadcasts']
+            if not games_string:
+                irc.reply("No games found for {}".format(team))
+                return
+            try:
+                tdate = datetime.datetime.strptime(games[0], '%Y-%m-%d').strftime('%m/%d/%y')
+                games_string_date = ircutils.bold(tdate + ': ')
+            except:
+                games_string_date = ''
+            #print(games[1]['clock'], games[1]['ended'])
+            if len(games) == 2:
+                if not games[1]['ended']:
+                    broadcasts = games[1]['broadcasts']
                     games_string += ' [{}]'.format(broadcasts)
-            irc.reply(games_string)
+            irc.reply(games_string_date + games_string)
         else:
             games = self._getGamesForDate(team, date)
             games_string = self._resultAsString(games)
+            print(games_string)
+            if games_string == '':
+                irc.reply("No games found for {}".format(team))
+                return
+            try:
+                tdate = datetime.datetime.strptime(games[0], '%Y-%m-%d').strftime('%m/%d/%y')
+                games_string_date = ircutils.bold(tdate + ': ')
+            except:
+                games_string_date = ''
             if len(games) == 1:
-                broadcasts = games[0]['broadcasts']
-                games_string += ' [{}]'.format(broadcasts)
-            irc.reply(games_string)
+                if not games[1]['ended']:
+                    try:
+                        broadcasts = games[1]['broadcasts']
+                        games_string += ' [{}]'.format(broadcasts)
+                    except:
+                        pass
+            #irc.reply(games_string)
+            irc.reply(games_string_date + games_string)
 
     nhl = wrap(nhl, [optional('somethingWithoutSpaces'), optional('somethingWithoutSpaces')])
 
@@ -135,9 +159,44 @@ class NHL(callbacks.Plugin):
                     return
 
         if date is None:
-            irc.reply(self._getTodayTV(team))
+            games = self._getTodayTV(team)
+            games_string = self._resultTVAsString(games)
+            try:
+                tdate = datetime.datetime.strptime(games[0], '%Y-%m-%d').strftime('%m/%d/%y')
+                games_string_date = ircutils.bold(tdate + ': ')
+            except:
+                games_string_date = ''
+            #print(games[0]['clock'], games[0]['ended'])
+            if len(games) == 1:
+                if not games[1]['ended']:
+                    broadcasts = games[1]['broadcasts']
+                    games_string += ' [{}]'.format(broadcasts)
+            irc.reply(games_string_date + games_string)
         else:
-            irc.reply(self._getTVForDate(team, date))
+            games = self._getTVForDate(team, date)
+            if isinstance(games, str):
+                irc.reply(games)
+                return
+            games_string = self._resultTVAsString(games)
+            try:
+                tdate = datetime.datetime.strptime(games[0], '%Y-%m-%d').strftime('%m/%d/%y')
+                games_string_date = ircutils.bold(tdate + ': ')
+            except:
+                games_string_date = ''
+            if len(games) == 1:
+                if not games[1]['ended']:
+                    try:
+                        broadcasts = games[1]['broadcasts']
+                        games_string += ' [{}]'.format(broadcasts)
+                    except:
+                        pass
+            #irc.reply(games_string)
+            irc.reply(games_string_date + games_string)
+        
+        #if date is None:
+        #    irc.reply(self._getTodayTV(team))
+        #else:
+        #    irc.reply(self._getTVForDate(team, date))
 
     nhltv = wrap(nhltv, [optional('somethingWithoutSpaces'), optional('somethingWithoutSpaces')])
 
@@ -152,12 +211,12 @@ class NHL(callbacks.Plugin):
 
     def _getTodayTV(self, team):
         games = self._getGames(team, self._getTodayDate())
-        return self._resultTVAsString(games)
+        return games
 
     def _getTVForDate(self, team, date):
         #print(date)
         games = self._getGames(team, date)
-        return self._resultTVAsString(games)
+        return games
 
 ############################
 # Content-getting helpers
@@ -172,6 +231,8 @@ class NHL(callbacks.Plugin):
         use_cache = (date == self._getTodayDate())
         #use_cache = False
         response = self._getURL(url, use_cache)
+        if isinstance(response, str):
+            return "ERROR: Something went wrong, check input"
 
         json = self._extractJSON(response)
         games = self._parseGames(json, team)
@@ -188,6 +249,7 @@ class NHL(callbacks.Plugin):
                       (X11; Ubuntu; Linux x86_64; rv:45.0) \
                       Gecko/20100101 Firefox/45.0'
         header = {'User-Agent': user_agent}
+        response = None
 
         # ('If-Modified-Since' to avoid unnecessary downloads.)
         if use_cache and self._haveCachedData(url):
@@ -208,6 +270,9 @@ class NHL(callbacks.Plugin):
                 pass
 
         self.log.info("{} - 200".format(url))
+        
+        if not response:
+            return "ERROR: Something went wrong, check input"
 
         if not use_cache:
             return response.read()
@@ -227,30 +292,35 @@ class NHL(callbacks.Plugin):
             team = 'NJD'
         if json['totalGames'] == 0:
             return games
+        games.append(json['dates'][0]['date'])
         for g in json['dates'][0]['games']:
             #print(g)
             # Starting times are in UTC. By default, we will show Eastern times.
             # (In the future we could add a user option to select timezones.)
             starting_time = self._ISODateToEasternTime(g['gameDate'])
             broadcasts = []
-            for item in g['broadcasts']:
-                broadcasts.append(item['name'])
+            try:
+                for item in g['broadcasts']:
+                    broadcasts.append(item['name'])
+            except:
+                pass
             #print(broadcasts)
             game_info = {'home_team': g['teams']['home']['team']['abbreviation'],
                          'away_team': g['teams']['away']['team']['abbreviation'],
                          'home_score': g['teams']['home']['score'],
                          'away_score': g['teams']['away']['score'],
                          'broadcasts': '{}'.format(', '.join(item for item in broadcasts)),
-                          'starting_time': starting_time,
-                          'starting_time_TBD': g['status']['startTimeTBD'],
-                          'period': g['linescore']['currentPeriod'],
-                          'clock': g['linescore'].get('currentPeriodTimeRemaining'),
-                          'powerplay_h': g['linescore']['teams']['home']['powerPlay'],
-                          'powerplay_a': g['linescore']['teams']['away']['powerPlay'],
-                          'goaliePulled_h': g['linescore']['teams']['home']['goaliePulled'],
-                          'goaliePulled_a': g['linescore']['teams']['away']['goaliePulled'],
-                          'ended': (g['status']['statusCode'] == '7' or g['status']['statusCode'] == '9'),
-                          'ppd': (g['status']['statusCode'] == '9')
+                         'starting_time': starting_time,
+                         'starting_time_TBD': g['status']['startTimeTBD'],
+                         'pregame': (True if 'Pre-Game' in g['status']['detailedState'] else False),
+                         'period': g['linescore']['currentPeriod'],
+                         'clock': g['linescore'].get('currentPeriodTimeRemaining'),
+                         'powerplay_h': g['linescore']['teams']['home']['powerPlay'],
+                         'powerplay_a': g['linescore']['teams']['away']['powerPlay'],
+                         'goaliePulled_h': g['linescore']['teams']['home']['goaliePulled'],
+                         'goaliePulled_a': g['linescore']['teams']['away']['goaliePulled'],
+                         'ended': (g['status']['statusCode'] == '7' or g['status']['statusCode'] == '9'),
+                         'ppd': (g['status']['statusCode'] == '9')
                         }
             #print(game_info['broadcasts'])
             if team == "all":
@@ -287,7 +357,7 @@ class NHL(callbacks.Plugin):
         if len(games) == 0:
             return "No games found"
         else:
-            s = sorted(games, key=lambda k: k['ended']) #, reverse=True)
+            s = sorted(games[1:], key=lambda k: k['ended']) #, reverse=True)
             #s = [self._gameToString(g) for g in games]
             b = []
             for g in s:
@@ -301,7 +371,7 @@ class NHL(callbacks.Plugin):
         if len(games) == 0:
             return "No games found"
         else:
-            s = sorted(games, key=lambda k: k['ended']) #, reverse=True)
+            s = sorted(games[1:], key=lambda k: k['ended']) #, reverse=True)
             #s = [self._gameToString(g) for g in games]
             b = []
             for g in s:
@@ -324,7 +394,7 @@ class NHL(callbacks.Plugin):
                             if not game['starting_time_TBD'] \
                             else "TBD"
             starting_time = ircutils.mircColor('PPD', 'red') if game['ppd'] else starting_time
-            return "{} @ {} {} [{}]".format(away_team, home_team, starting_time, game['broadcasts'])
+            return "{} @ {} {} [{}]".format(away_team, home_team, starting_time, ircutils.bold(game['broadcasts']))
 
         # The game started => It has points:
         away_score = game['away_score']
@@ -353,11 +423,16 @@ class NHL(callbacks.Plugin):
 
         print('got here ', game['broadcasts'])
 
-        game_string = "{} {} {} [{}]".format(away_string, home_string,
+        base_str = ''
+        if not game['ended']:
+            base_str = ' [{}]'.format(game['broadcasts'])
+
+        game_string = "{} {} {}{}".format(away_string, home_string,
                                         self._clockBoardToString(game['clock'],
                                                                 game['period'],
-                                                                game['ended']),
-                                                                game['broadcasts'])
+                                                                game['ended'],
+                                                                game['pregame']),
+                                                                base_str)
 
         return game_string
 
@@ -404,11 +479,12 @@ class NHL(callbacks.Plugin):
         game_string = "{} {} {}".format(away_string, home_string,
                                         self._clockBoardToString(game['clock'],
                                                                 game['period'],
-                                                                game['ended']))
+                                                                game['ended'],
+                                                                game['pregame']))
 
         return game_string
 
-    def _clockBoardToString(self, clock, period, game_ended):
+    def _clockBoardToString(self, clock, period, game_ended, pregame=None):
         """Get a string with current period and, if the game is still
         in progress, the remaining time in it."""
         period_number = period
@@ -434,6 +510,8 @@ class NHL(callbacks.Plugin):
             return ircutils.mircColor("End {}".format(period_string), 'light blue')
         else:
             # Period in progress, show clock:
+            if pregame:
+                return "{}".format(ircutils.mircColor('Pre-Game', 'green'))
             return "{}{}".format(clock + ' ' if clock != '00:00' else "", ircutils.mircColor(period_string, 'green'))
 
     def _periodToString(self, period):
@@ -507,25 +585,63 @@ class NHL(callbacks.Plugin):
         """Verify that the given string is a valid date formatted as
         YYYY-MM-DD. Also, the API seems to go back until 2014-10-04, so we
         will check that the input is not a date earlier than that."""
+        
+        error_string = 'Incorrect date format, should be YYYY-MM-DD'
+        
         if date is None:
             return None
 
         if date in self._FUZZY_DAYS:
             date = self._EnglishDateToDate(date)
+            
+        #try:
+        #    date = dateutil.parser.parse(date)
+        #except:
+        #    raise ValueError('Incorrect date format, should be YYYY-MM-DD')
+        
+        #print(date)
+        
+        if date.isdigit():
+            try:
+                date = datetime.datetime.strptime(date, '%Y%m%d').strftime('%Y-%m-%d')
+            except:
+                raise ValueError('Incorrect date format, should be YYYY-MM-DD')
         elif date.replace('-','').isdigit():
             try:
                 parsed_date = datetime.datetime.strptime(date, '%Y-%m-%d')
             except:
                 raise ValueError('Incorrect date format, should be YYYY-MM-DD')
-
-            # The current API goes back until 2014-10-04. Is it in range?
-            #if parsed_date.date() <  datetime.date(2014, 10, 4):
-            #    raise ValueError('I can only go back until 2014-10-04')
+        elif date.replace('/','').isdigit():
+            if len(date.split('/')) == 2:
+                year = '/' + str(datetime.datetime.now().year)
+                date += year
+            elif len(date.split('/')) == 3:
+                if len(date.split('/')[2]) == 2:
+                    date = '{}/{}/{}'.format(date.split('/')[0], date.split('/')[1], str(datetime.dateitme.now().year))
+            else:
+                raise ValueError('Incorrect date format, should be YYYY-MM-DD')
+            try:
+                date = datetime.datetime.strptime(date, '%m/%d/%Y').strftime('%Y-%m-%d')
+            except:
+                raise ValueError('Incorrect date format, should be YYYY-MM-DD')
+        elif '-' not in date and date.isdigit() == False and len(date) > 3:
+            if date.title() in ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']:
+                return "Incorrect date format, should be YYYY-MM-DD"
+            try:
+                date = date.title()
+                year = str(datetime.datetime.now().year)
+                date += year
+                try:
+                    date = datetime.datetime.strptime(date, '%d%b%Y').strftime('%Y-%m-%d')
+                except:
+                    date = datetime.datetime.strptime(date, '%b%d%Y').strftime('%Y-%m-%d')
+            except:
+                raise ValueError('Incorrect date format, should be YYYY-MM-DD')
         else:
             return None
 
         return date
 
-Class = NHL
+Class = NHLScores
 
 # vim:set shiftwidth=4 softtabstop=4 expandtab textwidth=79:
